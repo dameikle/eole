@@ -79,13 +79,86 @@ eole predict -config whisper_predict.yaml -src ./audio_files.txt -output ./segme
 
 ### Word timestamps
 
-Outputs JSON with per-word timing via cross-attention DTW alignment:
+Outputs JSON with per-word timing using the configured alignment backend:
 
 ```
 eole predict -config whisper_predict.yaml -src ./audio_files.txt -output ./words.json -timestamps word
 ```
 
-Note: word-level timestamps require a model with `alignment_heads` in its `generation_config.json` (e.g. `whisper-base.en`, `whisper-small`, `whisper-large-v3`).
+Note:
+- `word_timestamps_backend: whisper_attn` requires a model with `alignment_heads` in `generation_config.json` (e.g. `whisper-base.en`, `whisper-small`, `whisper-large-v3`).
+- `word_timestamps_backend: wav2vec2` uses torchaudio wav2vec2 alignment and does not depend on Whisper `alignment_heads`.
+
+## VAD modes
+
+EOLE supports optional VAD-aware decoding for audio inference through the standard transform pipeline.
+
+### 1) `vad_mode: none` (default)
+
+- No VAD-aware seeking behavior.
+- Uses standard timestamp-seeking decode.
+
+### 2) `vad_mode: chunk_skip`
+
+- Requires `transforms: [silero_vad]`.
+- Keeps standard 30s timestamp-seeking decode.
+- Skips chunks that have no overlap with detected speech segments.
+
+### 3) `vad_mode: segment`
+
+- Requires `transforms: [silero_vad]`.
+- Decodes merged VAD speech regions directly.
+- Produces fewer/larger ASR segments than subtitle-style captioning.
+
+Examples:
+
+```bash
+eole predict -config whisper_predict_vad.yaml
+eole predict -config whisper_predict_vad_chunk_skip.yaml
+eole predict -config whisper_predict_vad_segment.yaml
+```
+
+## Word timestamp backends
+
+Use `word_timestamps_backend` when `timestamps: word`:
+
+- `whisper_attn`: Whisper cross-attention DTW backend.
+- `wav2vec2`: wav2vec2 forced alignment backend (English-first in current implementation).
+- `auto`: selects backend automatically:
+  - `vad_mode: segment` -> `wav2vec2`
+  - other modes -> `whisper_attn`
+
+Example (segment mode + word timestamps):
+
+```bash
+eole predict -config whisper_predict_vad_segment_word.yaml
+```
+
+Custom non-English alignment model example (French transcription):
+
+```bash
+eole predict -config whisper_predict_fr_vad_segment_word.yaml -src ./french_audio.txt
+```
+
+Important:
+- wav2vec2 alignment model language should match the decoded text language.
+- For `task: transcribe` with `language: fr`, use a French aligner bundle.
+- For `task: translate` (output text in English), use an English aligner bundle.
+
+## Optional dependencies
+
+```bash
+pip install -e .[vad]          # Silero VAD transform
+```
+
+Notes:
+- `silero_vad` transform requires the `vad` extra.
+- `wav2vec2` word alignment uses torchaudio (already in base dependencies) and currently targets English use first.
+
+## Captioning note
+
+`timestamps: segment` outputs ASR/VAD segments. These are decode-oriented boundaries, not subtitle-layout boundaries.
+For production subtitles/voiceover cueing, apply a post-segmentation policy (line width, duration, CPS, punctuation/pause splitting).
 
 ## Language and task
 
@@ -118,6 +191,12 @@ Or with segment timestamps:
 
 ```
 eole predict -config whisper_predict_translate.yaml -model_path ${EOLE_MODEL_DIR}/whisper-small-eole -src ./french_audio.txt -output ./translation.json
+```
+
+If you want word timestamps for translated output (`task: translate`), keep the aligner language aligned with output text (English). Example:
+
+```bash
+eole predict -config whisper_predict_vad_segment_word.yaml -model_path ${EOLE_MODEL_DIR}/whisper-small-eole -src ./french_audio.txt -language fr -task translate
 ```
 
 ## Prompt conditioning
@@ -197,6 +276,12 @@ The script normalises text using `EnglishTextNormalizer` from the `whisper-norma
 | `gpu_ranks` | list | []       | GPU device IDs                                                  |
 | `seed` | int  | -1       | Random seed. Set to 0+ for deterministic fallback sampling      |
 | `timestamps` | str  | "none"   | Output mode: "none", "segment", "word"                          |
+| `vad_mode` | str | "none" | VAD behavior: "none", "chunk_skip", "segment" |
+| `word_timestamps_backend` | str | "auto" | Word timestamp backend: "auto", "whisper_attn", "wav2vec2" |
+| `word_alignment_model` | str | null | Optional torchaudio wav2vec2 pipeline bundle override |
+| `word_alignment_min_duration` | float | 0.02 | Minimum per-word duration after wav2vec2 post-processing |
+| `word_alignment_max_duration` | float | 1.5 | Maximum per-word duration after wav2vec2 post-processing |
+| `word_alignment_cap_outliers` | bool | true | Clamp long wav2vec2 word-duration outliers |
 | `language` | str  | null     | Source language code (e.g. "en", "fr", "zh")                    |
 | `task` | str  | null     | "transcribe" or "translate"                                     |
 | `initial_prompt` | str  | null     | Text prompt for decoder conditioning                            |

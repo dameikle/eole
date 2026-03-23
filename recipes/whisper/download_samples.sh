@@ -1,7 +1,7 @@
 #!/bin/bash
 # Download sample audio files for Whisper testing.
 # Requires: wget, ffmpeg
-set -e
+
 SAMPLE_DIR="${1:-samples}"
 mkdir -p "$SAMPLE_DIR"
 echo "Downloading samples..."

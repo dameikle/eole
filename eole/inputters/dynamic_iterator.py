@@ -343,7 +343,10 @@ class DynamicDatasetIter(torch.utils.data.IterableDataset):
         """
         if self.data_type == "audio":
             if self.task == CorpusTask.INFER:
-                return [ex for ex, _transform, _cid in tuple_bucket]
+                transformed = transform_bucket(self.task, tuple_bucket, self.score_threshold)
+                if transformed is None:
+                    return []
+                return transformed
 
             transformed_bucket = transform_bucket(self.task, tuple_bucket, self.score_threshold)
             if transformed_bucket is None:
@@ -564,6 +567,7 @@ class OnDeviceDatasetIter:
                     "left_pad",
                     "audio_file",
                     "src_type",
+                    "speech_segments",
                 ]:
                     if isinstance(tensor_batch[key], list):
                         tensor_batch[key] = [t.to(self.device) for t in tensor_batch[key]]

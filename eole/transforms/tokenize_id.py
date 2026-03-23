@@ -95,6 +95,9 @@ class HuggingfaceTokenizer(IntTokenizerTransform):
         return encoding.ids, encoding.tokens
 
     def apply(self, example, is_train=False, stats=None, **kwargs):
+        # Audio waveform examples are not tokenizable — pass through unchanged
+        if example.get("src_type") == "waveform":
+            return example
         assert isinstance(example["src"], str), "HuggingfaceTokenizer requires a string as input"
         example["src_ids"], example["src"] = self.tokenize_string(example["src"], side="src", is_train=is_train)
         if example.get("tgt", None) is not None:

@@ -107,6 +107,66 @@ def log_mel_spectrogram(audio, mel_transform, n_frames):
     return log_spec
 
 
+def merge_vad_segments(speech_segments, max_chunk_seconds=30.0, max_merge_gap_seconds=1.0):
+    """Merge/split VAD speech segments into decode chunks.
+
+    Args:
+        speech_segments: list of {"start": float, "end": float}
+        max_chunk_seconds: maximum chunk duration
+        max_merge_gap_seconds: maximum silence gap allowed while merging
+
+    Returns:
+        List of merged {"start": float, "end": float} chunks.
+    """
+    if not speech_segments:
+        return []
+
+    ordered = sorted(speech_segments, key=lambda seg: seg["start"])
+    merged = []
+    current_start = None
+    current_end = None
+
+    def flush_current():
+        nonlocal current_start, current_end
+        if current_start is not None and current_end is not None and current_end > current_start:
+            merged.append({"start": current_start, "end": current_end})
+        current_start = None
+        current_end = None
+
+    for seg in ordered:
+        seg_start = float(seg["start"])
+        seg_end = float(seg["end"])
+        if seg_end <= seg_start:
+            continue
+
+        if current_start is None:
+            current_start, current_end = seg_start, seg_end
+            continue
+
+        gap = seg_start - current_end
+        proposed_end = max(current_end, seg_end)
+        proposed_duration = proposed_end - current_start
+
+        if gap <= max_merge_gap_seconds and proposed_duration <= max_chunk_seconds:
+            current_end = proposed_end
+        else:
+            flush_current()
+            current_start, current_end = seg_start, seg_end
+
+    flush_current()
+
+    split_chunks = []
+    for seg in merged:
+        start = seg["start"]
+        end = seg["end"]
+        while end - start > max_chunk_seconds:
+            split_chunks.append({"start": start, "end": start + max_chunk_seconds})
+            start += max_chunk_seconds
+        split_chunks.append({"start": start, "end": end})
+
+    return split_chunks
+
+
 def tensorify_audio(minibatch, device):
     """Transform a batch of audio waveform examples into tensors.
 
@@ -132,6 +192,7 @@ def tensorify_audio(minibatch, device):
     # cid/cid_line_number are optional metadata from corpus config
     tensor_batch["cid"] = [ex.get("cid") for ex in examples]
     tensor_batch["cid_line_number"] = [ex.get("cid_line_number") for ex in examples]
+    tensor_batch["speech_segments"] = [ex.get("speech_segments", None) for ex in examples]
     return tensor_batch
 
 
