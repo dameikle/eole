@@ -79,11 +79,12 @@ class DecodingConfig(Config):
     verbose: bool = Field(default=False, description="Print scores and predictions for each input.")
     with_score: bool = Field(default=False, description="Add a tab separated score to each output.")
     # Audio/Whisper settings (used by AudioPredictor only)
-    timestamps: Literal["none", "segment", "word"] = Field(
+    timestamps: Literal["none", "segment", "word", "both"] = Field(
         default="none",
         description="Audio models only. Timestamp output: "
         "'none' = plain text, 'segment' = JSON with segment times, "
-        "'word' = per-word times via selected alignment backend.",
+        "'word' = per-word times via selected alignment backend, "
+        "'both' = JSON object with both segment and word timings.",
     )
     vad_mode: Literal["none", "chunk_skip", "segment"] = Field(
         default="none",
@@ -164,10 +165,10 @@ class DecodingConfig(Config):
 
     @model_validator(mode="after")
     def _validate_audio_timestamp_modes(self):
-        if self.timestamps == "word" and self.vad_mode == "segment":
+        if self.timestamps in {"word", "both"} and self.vad_mode == "segment":
             if self.word_timestamps_backend == "whisper_attn":
                 raise ValueError(
-                    "timestamps='word' with vad_mode='segment' requires word_timestamps_backend='wav2vec2' "
+                    "timestamps in {'word','both'} with vad_mode='segment' requires word_timestamps_backend='wav2vec2' "
                     "or 'auto'."
                 )
         if self.word_alignment_min_duration > self.word_alignment_max_duration:

@@ -321,7 +321,7 @@ class AudioPredictor(Translator):
         return best_token_ids, best_score
 
     def _resolve_word_timestamps_backend(self):
-        if self.timestamps_output != "word":
+        if self.timestamps_output not in {"word", "both"}:
             return None
 
         backend = self.word_timestamps_backend
@@ -330,7 +330,8 @@ class AudioPredictor(Translator):
 
         if self.vad_mode == "segment" and backend != "wav2vec2":
             raise ValueError(
-                "timestamps='word' with vad_mode='segment' requires word_timestamps_backend='wav2vec2' " "or 'auto'."
+                "timestamps in {'word','both'} with vad_mode='segment' requires word_timestamps_backend='wav2vec2' "
+                "or 'auto'."
             )
 
         if backend == "wav2vec2":
@@ -455,14 +456,16 @@ class AudioPredictor(Translator):
                     )
                 else:
                     skip_segments = speech_segments if self.vad_mode == "chunk_skip" else None
-                    collect_word_timestamps = not (self.timestamps_output == "word" and word_backend == "wav2vec2")
+                    collect_word_timestamps = not (
+                        self.timestamps_output in {"word", "both"} and word_backend == "wav2vec2"
+                    )
                     segments, word_segments = self._predict_with_timestamps(
                         waveform,
                         device,
                         speech_segments=skip_segments,
                         collect_word_timestamps=collect_word_timestamps,
                     )
-                    if self.timestamps_output == "word" and word_backend == "wav2vec2":
+                    if self.timestamps_output in {"word", "both"} and word_backend == "wav2vec2":
                         word_segments = self._get_wav2vec2_aligner().align(
                             waveform,
                             segments,
@@ -483,6 +486,30 @@ class AudioPredictor(Translator):
                             "support word-level timestamps."
                         )
                     all_predictions.append([json.dumps(word_segments)])
+                elif self.timestamps_output == "both":
+                    if word_backend == "whisper_attn" and self.word_timestamp_heads is None:
+                        raise ValueError(
+                            "Word-level timestamps require word_timestamp_heads "
+                            "in the model config. This model may not "
+                            "support word-level timestamps."
+                        )
+                    all_predictions.append(
+                        [
+                            json.dumps(
+                                {
+                                    "segments": segments,
+                                    "words": word_segments,
+                                    "meta": {
+                                        "timestamps": "both",
+                                        "word_backend": word_backend,
+                                        "vad_mode": self.vad_mode,
+                                        "language": self.language,
+                                        "task": self.audio_task,
+                                    },
+                                }
+                            )
+                        ]
+                    )
                 else:
                     text = " ".join(seg["text"] for seg in segments)
                     all_predictions.append([text])
@@ -607,7 +634,7 @@ class AudioPredictor(Translator):
         if all_segments and all_segments[-1]["end"] > audio_duration:
             all_segments[-1]["end"] = audio_duration
 
-        if self.timestamps_output == "word" and word_backend == "wav2vec2":
+        if self.timestamps_output in {"word", "both"} and word_backend == "wav2vec2":
             word_segments = self._get_wav2vec2_aligner().align(
                 waveform,
                 all_segments,
@@ -655,7 +682,9 @@ class AudioPredictor(Translator):
 
         token_beg = self.no_timestamps_token_id + 1
         do_word_timestamps = (
-            self.timestamps_output == "word" and collect_word_timestamps and self.word_timestamp_heads is not None
+            self.timestamps_output in {"word", "both"}
+            and collect_word_timestamps
+            and self.word_timestamp_heads is not None
         )
 
         total_samples = waveform.shape[0]

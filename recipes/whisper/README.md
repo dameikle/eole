@@ -264,29 +264,29 @@ The script normalises text using `EnglishTextNormalizer` from the `whisper-norma
 
 ## Config reference
 
-| Field | Type | Default  | Description                                                     |
-|-------|------|----------|-----------------------------------------------------------------|
-| `model_path` | str  | required | Path to converted eole model                                    |
-| `src` | str  | required | File listing audio paths (one per line)                         |
-| `output` | str  | required | Output file path                                                |
-| `beam_size` | int  | 5        | Beam search width                                               |
-| `length_penalty` | str  | "avg"    | Length penalty strategy. Use `none` for Whisper models           |
-| `max_length` | int  | 250      | Maximum output tokens                                           |
-| `batch_size` | int  | 1        | Batch size (use 1 for audio)                                    |
-| `gpu_ranks` | list | []       | GPU device IDs                                                  |
-| `seed` | int  | -1       | Random seed. Set to 0+ for deterministic fallback sampling      |
-| `timestamps` | str  | "none"   | Output mode: "none", "segment", "word"                          |
-| `vad_mode` | str | "none" | VAD behavior: "none", "chunk_skip", "segment" |
-| `word_timestamps_backend` | str | "auto" | Word timestamp backend: "auto", "whisper_attn", "wav2vec2" |
-| `word_alignment_model` | str | null | Optional torchaudio wav2vec2 pipeline bundle override |
-| `word_alignment_min_duration` | float | 0.02 | Minimum per-word duration after wav2vec2 post-processing |
-| `word_alignment_max_duration` | float | 1.5 | Maximum per-word duration after wav2vec2 post-processing |
-| `word_alignment_cap_outliers` | bool | true | Clamp long wav2vec2 word-duration outliers |
-| `language` | str  | null     | Source language code (e.g. "en", "fr", "zh")                    |
-| `task` | str  | null     | "transcribe" or "translate"                                     |
-| `initial_prompt` | str  | null     | Text prompt for decoder conditioning                            |
-| `condition_on_previous_text` | bool | false    | Condition next segment on previous segment's text               |
+| Field | Type | Default  | Description                                                                  |
+|-------|------|----------|------------------------------------------------------------------------------|
+| `model_path` | str  | required | Path to converted eole model                                                 |
+| `src` | str  | required | File listing audio paths (one per line)                                      |
+| `output` | str  | required | Output file path                                                             |
+| `beam_size` | int  | 5        | Beam search width                                                            |
+| `length_penalty` | str  | "avg"    | Length penalty strategy. Use `none` for Whisper models                       |
+| `max_length` | int  | 250      | Maximum output tokens                                                        |
+| `batch_size` | int  | 1        | Batch size (use 1 for audio)                                                 |
+| `gpu_ranks` | list | []       | GPU device IDs                                                               |
+| `seed` | int  | -1       | Random seed. Set to 0+ for deterministic fallback sampling                   |
+| `timestamps` | str  | "none"   | Output mode: "none", "segment", "word", "both"                                |
+| `vad_mode` | str | "none" | VAD behavior: "none", "chunk_skip", "segment"                                |
+| `word_timestamps_backend` | str | "auto" | Word timestamp backend: "auto", "whisper_attn", "wav2vec2"                   |
+| `word_alignment_model` | str | null | Optional torchaudio wav2vec2 pipeline bundle override                        |
+| `word_alignment_min_duration` | float | 0.02 | Minimum per-word duration after wav2vec2 post-processing                     |
+| `word_alignment_max_duration` | float | 1.5 | Maximum per-word duration after wav2vec2 post-processing                     |
+| `word_alignment_cap_outliers` | bool | true | Clamp long wav2vec2 word-duration outliers                                   |
+| `language` | str  | null     | Source language code (e.g. "en", "fr", "zh")                                 |
+| `task` | str  | null     | "transcribe" or "translate"                                                  |
+| `initial_prompt` | str  | null     | Text prompt for decoder conditioning                                         |
+| `condition_on_previous_text` | bool | false    | Condition next segment on previous segment's text                            |
 | `fallback_temperatures` | list | [0.0, 0.2, 0.4, 0.6, 0.8, 1.0] | Temperature cascade. Beam search at t=0, sampling at t>0. `[0.0]` to disable |
-| `compression_ratio_threshold` | float | 2.4 | Retry at next temperature if gzip compression ratio exceeds this |
-| `logprob_threshold` | float | -1.0 | Retry at next temperature if avg log probability is below this   |
-| `no_speech_threshold` | float | 0.6 | Low logprob only triggers fallback when no-speech prob is also below this |
+| `compression_ratio_threshold` | float | 2.4 | Retry at next temperature if gzip compression ratio exceeds this             |
+| `logprob_threshold` | float | -1.0 | Retry at next temperature if avg log probability is below this               |
+| `no_speech_threshold` | float | 0.6 | Low logprob only triggers fallback when no-speech prob is also below this    |
