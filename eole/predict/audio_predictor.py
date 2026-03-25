@@ -557,7 +557,6 @@ class AudioPredictor(Translator):
         merged = merge_vad_segments(
             speech_segments,
             max_chunk_seconds=float(self.chunk_length),
-            max_merge_gap_seconds=1.0,
         )
 
         saved_prefix = list(self._decoder_prefix_ids)
