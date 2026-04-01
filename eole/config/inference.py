@@ -104,6 +104,10 @@ class DecodingConfig(Config):
         default=None,
         description="Audio models only. Optional torchaudio wav2vec2 pipeline bundle name.",
     )
+    wav2vec_dtype: Literal["fp32", "fp16", "bf16"] = Field(
+        default="fp32",
+        description="Audio models only. Compute dtype for wav2vec2 word alignment model.",
+    )
     word_alignment_min_duration: float = Field(
         default=0.02,
         ge=0.0,

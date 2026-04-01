@@ -1,7 +1,12 @@
 """Word timestamp alignment backends for audio prediction."""
 
+import logging
 import math
 import torch
+
+from eole.constants import TORCH_DTYPES
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_for_ctc(text):
@@ -153,15 +158,18 @@ class Wav2Vec2WordAligner:
         self,
         model_name=None,
         device="cpu",
+        dtype=torch.float32,
         min_word_duration=0.02,
         max_word_duration=1.5,
         enable_outlier_cap=True,
     ):
         self.model_name = model_name or self.DEFAULT_EN_MODEL
         self.device = device
+        self.dtype = dtype
         self.min_word_duration = min_word_duration
         self.max_word_duration = max_word_duration
         self.enable_outlier_cap = enable_outlier_cap
+        self.model_dtype = torch.float32
         self.bundle = None
         self.model = None
         self.labels = None
@@ -184,11 +192,47 @@ class Wav2Vec2WordAligner:
                 f"Unknown bundle '{self.model_name}'."
             )
 
+        self.model_dtype = self._resolve_model_dtype()
         self.bundle = torchaudio.pipelines.__dict__[self.model_name]
-        self.model = self.bundle.get_model().to(self.device)
+        self.model = self.bundle.get_model().to(device=self.device, dtype=self.model_dtype)
         self.model.eval()
         self.labels = self.bundle.get_labels()
         self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
+
+    def _resolve_model_dtype(self):
+        requested_dtype = self.dtype
+        if isinstance(requested_dtype, str):
+            normalized_dtype = requested_dtype.lower()
+            if normalized_dtype not in TORCH_DTYPES:
+                raise ValueError(f"Invalid wav2vec_dtype value: {requested_dtype}")
+            requested_dtype = TORCH_DTYPES[normalized_dtype]
+
+        if requested_dtype == torch.int8:
+            logger.warning("wav2vec_dtype=int8 is unstable for alignment; falling back to fp32")
+            return torch.float32
+
+        if requested_dtype == torch.float16:
+            if self.device.startswith("cuda") or self.device.startswith("mps"):
+                return torch.float16
+            logger.warning(
+                "wav2vec_dtype=fp16 is unsupported on device=%s; falling back to fp32",
+                self.device,
+            )
+            return torch.float32
+
+        if requested_dtype == torch.bfloat16:
+            if self.device.startswith("cuda") or self.device.startswith("mps"):
+                return torch.bfloat16
+            logger.warning(
+                "wav2vec_dtype=bf16 is unsupported on device=%s; falling back to fp32",
+                self.device,
+            )
+            return torch.float32
+
+        if requested_dtype != torch.float32:
+            raise ValueError(f"Unsupported wav2vec_dtype={requested_dtype}; use fp32, fp16, or bf16.")
+
+        return torch.float32
 
     def _align_segment_words(self, audio, text, seg_start, seg_end):
         text = text.strip()
@@ -214,7 +258,7 @@ class Wav2Vec2WordAligner:
             return self._uniform_words(words, seg_start, seg_end)
 
         with torch.inference_mode():
-            emissions, _ = self.model(audio.unsqueeze(0).to(self.device))
+            emissions, _ = self.model(audio.unsqueeze(0).to(device=self.device, dtype=self.model_dtype))
             emissions = torch.log_softmax(emissions[0], dim=-1)
 
         trellis = _make_trellis(emissions, token_ids, self.blank_id)

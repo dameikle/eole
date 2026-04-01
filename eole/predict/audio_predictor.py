@@ -68,6 +68,7 @@ class AudioPredictor(Translator):
         self.vad_mode = getattr(config, "vad_mode", "none")
         self.word_timestamps_backend = getattr(config, "word_timestamps_backend", "auto")
         self.word_alignment_model = getattr(config, "word_alignment_model", None)
+        self.wav2vec_dtype = getattr(config, "wav2vec_dtype", torch.float32)
         self.word_alignment_min_duration = getattr(config, "word_alignment_min_duration", 0.02)
         self.word_alignment_max_duration = getattr(config, "word_alignment_max_duration", 1.5)
         self.word_alignment_cap_outliers = getattr(config, "word_alignment_cap_outliers", True)
@@ -114,6 +115,7 @@ class AudioPredictor(Translator):
 
         # Decoder prefix: [startofprev, prompt..., SOT, lang?, task?]
         self._decoder_prefix_ids = []
+        self._initial_prompt_tokens = []
 
         initial_prompt = getattr(config, "initial_prompt", None)
         if initial_prompt:
@@ -127,6 +129,7 @@ class AudioPredictor(Translator):
             self._decoder_prefix_ids.append(startofprev_id)
             prompt_ids = self._tokenizer.encode(initial_prompt).ids
             self._decoder_prefix_ids.extend(prompt_ids)
+            self._initial_prompt_tokens = list(prompt_ids)
 
         sot_start_idx = len(self._decoder_prefix_ids)
         self._decoder_prefix_ids.append(self._tgt_start_with)
@@ -158,9 +161,6 @@ class AudioPredictor(Translator):
         self.condition_on_previous_text = getattr(config, "condition_on_previous_text", False)
         self._startofprev_id = self._tgt_vocab.lookup_token("<|startofprev|>")
         self._max_prompt_length = self.max_length // 2 - 1
-        self._initial_prompt_tokens = []
-        if initial_prompt and self._tokenizer:
-            self._initial_prompt_tokens = list(self._tokenizer.encode(initial_prompt).ids)
 
         # Keep a copy of the static prefix for restoring between chunks
         self._static_prefix_ids = list(self._decoder_prefix_ids)
@@ -358,6 +358,7 @@ class AudioPredictor(Translator):
             self._wav2vec2_aligner = Wav2Vec2WordAligner(
                 model_name=self.word_alignment_model,
                 device=str(device),
+                dtype=self.wav2vec_dtype,
                 min_word_duration=self.word_alignment_min_duration,
                 max_word_duration=self.word_alignment_max_duration,
                 enable_outlier_cap=self.word_alignment_cap_outliers,
