@@ -16,7 +16,11 @@ from eole.inputters.audio_utils import (
     median_filter,
     merge_vad_segments,
 )
-from eole.predict.word_alignment import Wav2Vec2WordAligner
+from eole.predict.word_alignment import (
+    Wav2Vec2WordAligner,
+    normalize_language_code,
+    supports_default_alignment_language,
+)
 from eole.predict.translator import Translator
 
 
@@ -335,28 +339,27 @@ class AudioPredictor(Translator):
             )
 
         if backend == "wav2vec2":
-            if self.audio_task == "translate":
-                language = "en"
-            else:
-                language = (self.language or "en").lower()
-            if self.word_alignment_model is None and language not in {
-                "en",
-                "en-us",
-                "en-gb",
-            }:
+            language = self._resolve_alignment_language()
+            if self.word_alignment_model is None and not supports_default_alignment_language(language):
                 raise ValueError(
-                    "English-first wav2vec2 alignment currently supports only language='en'. "
-                    "Use language='en', provide a supported torchaudio wav2vec2 bundle via word_alignment_model, "
-                    "or switch word_timestamps_backend to 'whisper_attn'."
+                    "No default wav2vec2 alignment model for language="
+                    f"'{language}'. Set word_alignment_model explicitly or switch "
+                    "word_timestamps_backend to 'whisper_attn'."
                 )
 
         return backend
+
+    def _resolve_alignment_language(self):
+        if self.audio_task == "translate":
+            return "en"
+        return normalize_language_code(self.language or "en")
 
     def _get_wav2vec2_aligner(self):
         if self._wav2vec2_aligner is None:
             device = next(self.model.parameters()).device
             self._wav2vec2_aligner = Wav2Vec2WordAligner(
                 model_name=self.word_alignment_model,
+                language=self._resolve_alignment_language(),
                 device=str(device),
                 dtype=self.wav2vec_dtype,
                 min_word_duration=self.word_alignment_min_duration,

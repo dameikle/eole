@@ -48,7 +48,8 @@ eole convert HF --model_dir openai/whisper-base.en --output ${EOLE_MODEL_DIR}/wh
 bash download_samples.sh
 ```
 
-This downloads a few public-domain audio clips and converts them to 16kHz mono WAV.
+This downloads a few public-domain audio clips (English + multilingual Wikimedia samples)
+and converts them to 16kHz mono WAV.
 Requires `wget` and `ffmpeg`.
 
 ### Run inference
@@ -123,7 +124,7 @@ eole predict -config whisper_predict_vad_segment.yaml
 Use `word_timestamps_backend` when `timestamps: word`:
 
 - `whisper_attn`: Whisper cross-attention DTW backend.
-- `wav2vec2`: wav2vec2 forced alignment backend (English-first in current implementation).
+- `wav2vec2`: wav2vec2 forced alignment backend (multilingual; defaults depend on language).
 - `auto`: selects backend automatically:
   - `vad_mode: segment` -> `wav2vec2`
   - other modes -> `whisper_attn`
@@ -153,7 +154,29 @@ pip install -e .[vad]          # Silero VAD transform
 
 Notes:
 - `silero_vad` transform requires the `vad` extra.
-- `wav2vec2` word alignment uses torchaudio (already in base dependencies) and currently targets English use first.
+- `wav2vec2` word alignment uses torchaudio for some languages and Hugging Face wav2vec2 CTC models for others.
+
+### Multilingual sample smoke tests
+
+The download script adds one sample each for French, German, Spanish, Japanese, and Chinese:
+
+- `samples/fr0.wav`
+- `samples/de0.wav`
+- `samples/es0.wav`
+- `samples/ja0.wav`
+- `samples/zh0.wav`
+
+Example per-language run (replace language and sample file):
+
+```bash
+echo "samples/fr0.wav" > ./sample_one.txt
+eole predict -config whisper_predict_vad_segment_word.yaml \
+  -model_path ${EOLE_MODEL_DIR}/whisper-base-eole \
+  -src ./sample_one.txt \
+  -output ./fr_words.json \
+  -language fr \
+  -task transcribe
+```
 
 ## Captioning note
 

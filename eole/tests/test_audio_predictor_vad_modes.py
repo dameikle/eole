@@ -23,13 +23,25 @@ class TestAudioPredictorVADModes(unittest.TestCase):
         backend = predictor._resolve_word_timestamps_backend()
         self.assertEqual(backend, "wav2vec2")
 
-    def test_resolve_backend_transcribe_non_en_without_model_raises(self):
+    def test_resolve_backend_transcribe_fr_without_model_uses_default(self):
         predictor = AudioPredictor.__new__(AudioPredictor)
         predictor.timestamps_output = "word"
         predictor.vad_mode = "segment"
         predictor.word_timestamps_backend = "auto"
         predictor.audio_task = "transcribe"
         predictor.language = "fr"
+        predictor.word_alignment_model = None
+
+        backend = predictor._resolve_word_timestamps_backend()
+        self.assertEqual(backend, "wav2vec2")
+
+    def test_resolve_backend_transcribe_unsupported_language_raises(self):
+        predictor = AudioPredictor.__new__(AudioPredictor)
+        predictor.timestamps_output = "word"
+        predictor.vad_mode = "segment"
+        predictor.word_timestamps_backend = "auto"
+        predictor.audio_task = "transcribe"
+        predictor.language = "sw"
         predictor.word_alignment_model = None
 
         with self.assertRaises(ValueError):
@@ -59,13 +71,13 @@ class TestAudioPredictorVADModes(unittest.TestCase):
         backend = predictor._resolve_word_timestamps_backend()
         self.assertEqual(backend, "wav2vec2")
 
-    def test_resolve_backend_transcribe_non_en_without_model_raises_for_both(self):
+    def test_resolve_backend_transcribe_unsupported_language_raises_for_both(self):
         predictor = AudioPredictor.__new__(AudioPredictor)
         predictor.timestamps_output = "both"
         predictor.vad_mode = "segment"
         predictor.word_timestamps_backend = "auto"
         predictor.audio_task = "transcribe"
-        predictor.language = "fr"
+        predictor.language = "sw"
         predictor.word_alignment_model = None
 
         with self.assertRaises(ValueError):

@@ -102,7 +102,7 @@ class DecodingConfig(Config):
     )
     word_alignment_model: str | None = Field(
         default=None,
-        description="Audio models only. Optional torchaudio wav2vec2 pipeline bundle name.",
+        description="Audio models only. Optional wav2vec2 alignment model name (torchaudio bundle or Hugging Face model id).",
     )
     wav2vec_dtype: Literal["fp32", "fp16", "bf16"] = Field(
         default="fp32",

@@ -1,13 +1,46 @@
 import unittest
 
 from eole.predict.word_alignment import (
+    _normalize_for_ctc,
     _cap_outlier_durations,
     _interpolate_missing_word_times,
     _stabilize_word_times,
+    normalize_language_code,
+    resolve_default_alignment_model,
+    supports_default_alignment_language,
 )
 
 
 class TestWordAlignmentPostprocessing(unittest.TestCase):
+    def test_normalize_language_code(self):
+        self.assertEqual(normalize_language_code("en-US"), "en")
+        self.assertEqual(normalize_language_code("fr_CA"), "fr")
+        self.assertEqual(normalize_language_code(None), "en")
+
+    def test_supports_default_alignment_language(self):
+        self.assertTrue(supports_default_alignment_language("fr"))
+        self.assertTrue(supports_default_alignment_language("ja"))
+        self.assertFalse(supports_default_alignment_language("sw"))
+
+    def test_resolve_default_alignment_model(self):
+        model_name, model_type, language = resolve_default_alignment_model("fr")
+        self.assertEqual(model_name, "VOXPOPULI_ASR_BASE_10K_FR")
+        self.assertEqual(model_type, "torchaudio")
+        self.assertEqual(language, "fr")
+
+        model_name, model_type, language = resolve_default_alignment_model("zh-CN")
+        self.assertEqual(model_name, "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn")
+        self.assertEqual(model_type, "huggingface")
+        self.assertEqual(language, "zh")
+
+    def test_resolve_default_alignment_model_unsupported_raises(self):
+        with self.assertRaises(ValueError):
+            resolve_default_alignment_model("sw")
+
+    def test_normalize_for_ctc_without_spaces_language(self):
+        self.assertEqual(_normalize_for_ctc("你 好", "zh"), "你好")
+        self.assertEqual(_normalize_for_ctc("hello world", "en"), "hello|world")
+
     def test_interpolate_missing_word_times(self):
         words = [
             {"text": "hello", "start": 0.0, "end": 0.5},
