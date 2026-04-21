@@ -5,6 +5,7 @@ setup.py for eole.
 csrc/ is fully self-contained.
 
 """
+
 from os import path
 from setuptools import setup, find_packages
 
@@ -120,6 +121,10 @@ setup(
         "waitress",
         "pydantic",
     ],
-    extras_require={"wer": ["jiwer>=3.0", "whisper-normalizer>=0.1"]},
+    extras_require={
+        "align": ["transformers>=4.48.0"],
+        "wer": ["jiwer>=3.0", "whisper-normalizer>=0.1"],
+        "vad": ["silero-vad"],
+    },
     entry_points={"console_scripts": ["eole=eole.bin.main:main"]},
 )

@@ -1,0 +1,20 @@
+## Whisper inference with VAD chunk skipping
+## Requires: pip install eole[vad]
+
+model_path: "$EOLE_MODEL_DIR/whisper-base-eole"
+data_type: audio
+src: ./audio_files.txt
+output: ./transcription_vad_chunk_skip.txt
+transforms: [silero_vad]
+vad_mode: chunk_skip
+beam_size: 5
+length_penalty: none
+max_length: 448
+gpu_ranks: [0]
+batch_type: sents
+batch_size: 1
+language: en
+task: transcribe
+condition_on_previous_text: true
+seed: 0
+verbose: true

@@ -10,7 +10,17 @@ import torch
 import torchaudio.transforms as T
 from time import time
 
-from eole.inputters.audio_utils import dynamic_time_warping, log_mel_spectrogram, median_filter
+from eole.inputters.audio_utils import (
+    dynamic_time_warping,
+    log_mel_spectrogram,
+    median_filter,
+    merge_vad_segments,
+)
+from eole.predict.word_alignment import (
+    Wav2Vec2WordAligner,
+    normalize_language_code,
+    supports_default_alignment_language,
+)
 from eole.predict.translator import Translator
 
 
@@ -59,6 +69,13 @@ class AudioPredictor(Translator):
         self.chunk_samples = self.chunk_length * self.sample_rate
         self.n_frames = self.chunk_samples // self.hop_length
         self.timestamps_output = getattr(config, "timestamps", "none")
+        self.vad_mode = getattr(config, "vad_mode", "none")
+        self.word_timestamps_backend = getattr(config, "word_timestamps_backend", "auto")
+        self.word_alignment_model = getattr(config, "word_alignment_model", None)
+        self.wav2vec_dtype = getattr(config, "wav2vec_dtype", torch.float32)
+        self.word_alignment_min_duration = getattr(config, "word_alignment_min_duration", 0.02)
+        self.word_alignment_max_duration = getattr(config, "word_alignment_max_duration", 1.5)
+        self.word_alignment_cap_outliers = getattr(config, "word_alignment_cap_outliers", True)
 
         # Mel transform lives on CPU; output is moved to device in the seeking loop
         self._mel_transform = T.MelSpectrogram(
@@ -102,6 +119,7 @@ class AudioPredictor(Translator):
 
         # Decoder prefix: [startofprev, prompt..., SOT, lang?, task?]
         self._decoder_prefix_ids = []
+        self._initial_prompt_tokens = []
 
         initial_prompt = getattr(config, "initial_prompt", None)
         if initial_prompt:
@@ -115,13 +133,14 @@ class AudioPredictor(Translator):
             self._decoder_prefix_ids.append(startofprev_id)
             prompt_ids = self._tokenizer.encode(initial_prompt).ids
             self._decoder_prefix_ids.extend(prompt_ids)
+            self._initial_prompt_tokens = list(prompt_ids)
 
         sot_start_idx = len(self._decoder_prefix_ids)
         self._decoder_prefix_ids.append(self._tgt_start_with)
-
-        language = getattr(config, "language", None)
-        if language:
-            lang_token = f"<|{language}|>"
+        self.language = getattr(config, "language", None)
+        self.audio_task = getattr(config, "task", None)
+        if self.language:
+            lang_token = f"<|{self.language}|>"
             lang_id = self._tgt_vocab.lookup_token(lang_token)
             unk_id = self._tgt_vocab.lookup_token("<unk>")
             if lang_id == unk_id:
@@ -146,12 +165,25 @@ class AudioPredictor(Translator):
         self.condition_on_previous_text = getattr(config, "condition_on_previous_text", False)
         self._startofprev_id = self._tgt_vocab.lookup_token("<|startofprev|>")
         self._max_prompt_length = self.max_length // 2 - 1
-        self._initial_prompt_tokens = []
-        if initial_prompt and self._tokenizer:
-            self._initial_prompt_tokens = list(self._tokenizer.encode(initial_prompt).ids)
 
         # Keep a copy of the static prefix for restoring between chunks
         self._static_prefix_ids = list(self._decoder_prefix_ids)
+
+        self._notimestamps_sot = None
+        self._notimestamps_prefix_ids = None
+        self._timestamp_token_ids = []
+        if self.no_timestamps_token_id is not None:
+            self._notimestamps_sot = list(self._sot_sequence) + [self.no_timestamps_token_id]
+            sot_start = len(self._static_prefix_ids) - len(self._sot_sequence)
+            self._notimestamps_prefix_ids = self._static_prefix_ids[:sot_start] + self._notimestamps_sot
+            n_ts_tokens = int(self.chunk_length / self.timestamp_resolution) + 1
+            self._timestamp_token_ids = list(
+                range(
+                    self.no_timestamps_token_id + 1,
+                    self.no_timestamps_token_id + 1 + n_ts_tokens,
+                )
+            )
+        self._wav2vec2_aligner = None
 
         unk_id = self._tgt_vocab.lookup_token("<unk>")
         # large-v3+ renamed <|nocaptions|> to <|nospeech|>
@@ -168,6 +200,8 @@ class AudioPredictor(Translator):
         self._no_speech_threshold = getattr(config, "no_speech_threshold", 0.6)
 
         self._fallback_temperatures = getattr(config, "fallback_temperatures", [0.0])
+        self._fallback_top_k = getattr(config, "fallback_top_k", 0)
+        self._fallback_top_p = getattr(config, "fallback_top_p", 1.0)
         self._compression_ratio_threshold = getattr(config, "compression_ratio_threshold", 2.4)
         self._logprob_threshold = getattr(config, "logprob_threshold", -1.0)
         self._seed = getattr(config, "seed", -1)
@@ -239,6 +273,8 @@ class AudioPredictor(Translator):
             token_ids, score, _ = self._extract_result(results)
             return token_ids, score
 
+        if self.no_timestamps_token_id is None:
+            raise ValueError("Decoding fallback requires no_timestamps_token_id in the model config.")
         token_beg = self.no_timestamps_token_id + 1
         best_token_ids = None
         best_score = None
@@ -250,7 +286,12 @@ class AudioPredictor(Translator):
             else:
                 if self._seed >= 0:
                     torch.manual_seed(self._seed + i)
-                params = dict(beam_size=1, temperature=t, top_k=0, top_p=1.0)
+                params = dict(
+                    beam_size=1,
+                    temperature=t,
+                    top_k=self._fallback_top_k,
+                    top_p=self._fallback_top_p,
+                )
 
             with self._search_params(**params):
                 results = self.predict_batch(batch, attn_debug=False)
@@ -286,9 +327,53 @@ class AudioPredictor(Translator):
                         f"avg_logprob={avg_logprob:.2f}<{self._logprob_threshold}"
                         f" & no_speech_prob={self._no_speech_prob:.2f}<{self._no_speech_threshold}"
                     )
-                self._log(f"Fallback: t={t} failed ({', '.join(reasons)}), retrying at t={temperatures[i+1]}")
+                self._log(f"Fallback: t={t} failed ({', '.join(reasons)}), retrying at t={temperatures[i + 1]}")
 
         return best_token_ids, best_score
+
+    def _resolve_word_timestamps_backend(self):
+        if self.timestamps_output not in {"word", "both"}:
+            return None
+
+        backend = self.word_timestamps_backend
+        if backend == "auto":
+            backend = "wav2vec2" if self.vad_mode == "segment" else "whisper_attn"
+
+        if self.vad_mode == "segment" and backend != "wav2vec2":
+            raise ValueError(
+                "timestamps in {'word','both'} with vad_mode='segment' requires word_timestamps_backend='wav2vec2' "
+                "or 'auto'."
+            )
+
+        if backend == "wav2vec2":
+            language = self._resolve_alignment_language()
+            if self.word_alignment_model is None and not supports_default_alignment_language(language):
+                raise ValueError(
+                    "No default wav2vec2 alignment model for language="
+                    f"'{language}'. Set word_alignment_model explicitly or switch "
+                    "word_timestamps_backend to 'whisper_attn'."
+                )
+
+        return backend
+
+    def _resolve_alignment_language(self):
+        if self.audio_task == "translate":
+            return "en"
+        return normalize_language_code(self.language or "en")
+
+    def _get_wav2vec2_aligner(self):
+        if self._wav2vec2_aligner is None:
+            device = next(self.model.parameters()).device
+            self._wav2vec2_aligner = Wav2Vec2WordAligner(
+                model_name=self.word_alignment_model,
+                language=self._resolve_alignment_language(),
+                device=str(device),
+                dtype=self.wav2vec_dtype,
+                min_word_duration=self.word_alignment_min_duration,
+                max_word_duration=self.word_alignment_max_duration,
+                enable_outlier_cap=self.word_alignment_cap_outliers,
+            )
+        return self._wav2vec2_aligner
 
     def _decode_and_generate(
         self,
@@ -364,7 +449,39 @@ class AudioPredictor(Translator):
         for batch, bucket_idx in infer_iter:
             if batch.get("src_type") == "waveform":
                 waveform = batch["src"]
-                segments, word_segments = self._predict_with_timestamps(waveform, device)
+                speech_segments = batch.get("speech_segments", [None])[0]
+                word_backend = self._resolve_word_timestamps_backend()
+
+                if self.vad_mode == "segment" and speech_segments is None:
+                    raise ValueError(
+                        "vad_mode='segment' requires VAD metadata. "
+                        "Enable the silero_vad transform with transforms: [silero_vad]."
+                    )
+
+                if self.vad_mode == "segment" and speech_segments is not None:
+                    segments, word_segments = self._predict_vad_segments(
+                        waveform,
+                        device,
+                        speech_segments,
+                        word_backend=word_backend,
+                    )
+                else:
+                    skip_segments = speech_segments if self.vad_mode == "chunk_skip" else None
+                    collect_word_timestamps = not (
+                        self.timestamps_output in {"word", "both"} and word_backend == "wav2vec2"
+                    )
+                    segments, word_segments = self._predict_with_timestamps(
+                        waveform,
+                        device,
+                        speech_segments=skip_segments,
+                        collect_word_timestamps=collect_word_timestamps,
+                    )
+                    if self.timestamps_output in {"word", "both"} and word_backend == "wav2vec2":
+                        word_segments = self._get_wav2vec2_aligner().align(
+                            waveform,
+                            segments,
+                            self.sample_rate,
+                        )
                 if segments:
                     avg_score = sum(seg["score"] for seg in segments) / len(segments)
                 else:
@@ -373,13 +490,37 @@ class AudioPredictor(Translator):
                 if self.timestamps_output == "segment":
                     all_predictions.append([json.dumps(segments)])
                 elif self.timestamps_output == "word":
-                    if self.word_timestamp_heads is None:
+                    if word_backend == "whisper_attn" and self.word_timestamp_heads is None:
                         raise ValueError(
                             "Word-level timestamps require word_timestamp_heads "
                             "in the model config. This model may not "
                             "support word-level timestamps."
                         )
                     all_predictions.append([json.dumps(word_segments)])
+                elif self.timestamps_output == "both":
+                    if word_backend == "whisper_attn" and self.word_timestamp_heads is None:
+                        raise ValueError(
+                            "Word-level timestamps require word_timestamp_heads "
+                            "in the model config. This model may not "
+                            "support word-level timestamps."
+                        )
+                    all_predictions.append(
+                        [
+                            json.dumps(
+                                {
+                                    "segments": segments,
+                                    "words": word_segments,
+                                    "meta": {
+                                        "timestamps": "both",
+                                        "word_backend": word_backend,
+                                        "vad_mode": self.vad_mode,
+                                        "language": self.language,
+                                        "task": self.audio_task,
+                                    },
+                                }
+                            )
+                        ]
+                    )
                 else:
                     text = " ".join(seg["text"] for seg in segments)
                     all_predictions.append([text])
@@ -414,7 +555,113 @@ class AudioPredictor(Translator):
 
         return all_scores, all_estim, all_predictions
 
-    def _predict_with_timestamps(self, waveform, device):
+    def _predict_vad_segments(self, waveform, device, speech_segments, word_backend=None):
+        if not speech_segments:
+            return [], []
+        if (
+            self.no_timestamps_token_id is None
+            or self._notimestamps_prefix_ids is None
+            or self._notimestamps_sot is None
+        ):
+            raise ValueError("vad_mode='segment' requires no_timestamps_token_id in the model config.")
+
+        merged = merge_vad_segments(
+            speech_segments,
+            max_chunk_seconds=float(self.chunk_length),
+        )
+
+        saved_prefix = list(self._decoder_prefix_ids)
+        saved_sot = list(self._sot_sequence)
+        saved_start = self._tgt_start_with
+        saved_suppress = list(self.suppress_tokens)
+
+        self._sot_sequence = list(self._notimestamps_sot)
+        self._decoder_prefix_ids = list(self._notimestamps_prefix_ids)
+        self._tgt_start_with = self._notimestamps_prefix_ids[0]
+        self.suppress_tokens = list(dict.fromkeys(saved_suppress + self._timestamp_token_ids))
+
+        all_segments = []
+        all_tokens = list(self._initial_prompt_tokens) if self.condition_on_previous_text else []
+
+        try:
+            for chunk_info in merged:
+                start_sample = int(chunk_info["start"] * self.sample_rate)
+                end_sample = int(chunk_info["end"] * self.sample_rate)
+                chunk = waveform[start_sample:end_sample]
+
+                if chunk.shape[0] < self.chunk_samples:
+                    chunk = torch.nn.functional.pad(chunk, (0, self.chunk_samples - chunk.shape[0]))
+                elif chunk.shape[0] > self.chunk_samples:
+                    chunk = chunk[: self.chunk_samples]
+
+                mel = log_mel_spectrogram(chunk, self._mel_transform, n_frames=self.n_frames)
+                batch = {
+                    "src": mel.unsqueeze(0).to(
+                        device=device,
+                        dtype=next(self.model.parameters()).dtype,
+                    ),
+                    "srclen": torch.tensor([mel.shape[-1]], device=device),
+                }
+
+                if self.condition_on_previous_text and all_tokens:
+                    prefix = self._build_conditioned_prefix(all_tokens, no_timestamps=True)
+                    batch["tgt"] = torch.tensor([prefix], dtype=torch.long, device=device)
+                    self._decoder_prefix_ids = prefix
+                    self._tgt_start_with = self._startofprev_id
+                else:
+                    self._decoder_prefix_ids = list(self._notimestamps_prefix_ids)
+                    self._tgt_start_with = self._notimestamps_prefix_ids[0]
+
+                with torch.no_grad():
+                    token_ids, score = self._decode_with_fallback(batch)
+                if token_ids is None:
+                    continue
+
+                token_beg = self.no_timestamps_token_id + 1
+                text_ids = self._extract_text_token_ids(token_ids, token_beg)
+                text = self._decode_token_ids(text_ids)
+                if text.strip():
+                    score_value = float(score) if score is not None else 0.0
+                    score_per_token = score_value / max(len(text_ids), 1)
+                    all_segments.append(
+                        {
+                            "start": round(chunk_info["start"], 2),
+                            "end": round(chunk_info["end"], 2),
+                            "text": text.strip(),
+                            "score": score_per_token,
+                        }
+                    )
+
+                if self.condition_on_previous_text:
+                    all_tokens.extend(tid for tid in token_ids if tid not in self._tgt_eos_idx)
+        finally:
+            self._decoder_prefix_ids = saved_prefix
+            self._sot_sequence = saved_sot
+            self._tgt_start_with = saved_start
+            self.suppress_tokens = saved_suppress
+
+        audio_duration = round(waveform.shape[0] / self.sample_rate, 2)
+        if all_segments and all_segments[-1]["end"] > audio_duration:
+            all_segments[-1]["end"] = audio_duration
+
+        if self.timestamps_output in {"word", "both"} and word_backend == "wav2vec2":
+            word_segments = self._get_wav2vec2_aligner().align(
+                waveform,
+                all_segments,
+                self.sample_rate,
+            )
+        else:
+            word_segments = []
+
+        return all_segments, word_segments
+
+    def _predict_with_timestamps(
+        self,
+        waveform,
+        device,
+        speech_segments=None,
+        collect_word_timestamps=True,
+    ):
         """Sequential timestamp-seeking transcription.
 
         Decodes audio windows, using timestamp tokens to determine
@@ -423,6 +670,10 @@ class AudioPredictor(Translator):
         Args:
             waveform: 1D float tensor of audio samples
             device: torch device for model inference
+            speech_segments: optional list of {"start": float, "end": float}
+                dicts from VAD. When provided and empty, returns immediately
+                (all silence). When non-empty, chunks with no speech overlap
+                are skipped for performance.
 
         Returns:
             (all_segments, word_segments) where:
@@ -434,8 +685,17 @@ class AudioPredictor(Translator):
         """
         if self.no_timestamps_token_id is None:
             raise ValueError("Timestamp-seeking mode requires no_timestamps_token_id in the model config.")
+
+        # VAD returned empty speech_segments → entire audio is silence
+        if speech_segments is not None and len(speech_segments) == 0:
+            return [], []
+
         token_beg = self.no_timestamps_token_id + 1
-        do_word_timestamps = self.timestamps_output == "word" and self.word_timestamp_heads is not None
+        do_word_timestamps = (
+            self.timestamps_output in {"word", "both"}
+            and collect_word_timestamps
+            and self.word_timestamp_heads is not None
+        )
 
         total_samples = waveform.shape[0]
         seek = 0
@@ -447,6 +707,19 @@ class AudioPredictor(Translator):
             chunk = waveform[seek : seek + self.chunk_samples]
             if chunk.shape[0] < self.chunk_samples:
                 chunk = torch.nn.functional.pad(chunk, (0, self.chunk_samples - chunk.shape[0]))
+
+            # Skip chunks with no speech overlap (VAD optimization)
+            if speech_segments is not None and len(speech_segments) > 0:
+                chunk_start_sec = seek / self.sample_rate
+                chunk_end_sec = (seek + self.chunk_samples) / self.sample_rate
+                has_speech = any(
+                    seg["end"] > chunk_start_sec and seg["start"] < chunk_end_sec for seg in speech_segments
+                )
+                if not has_speech:
+                    if self.verbose:
+                        self._log(f"VAD: skipping chunk at " f"{chunk_start_sec:.1f}s-{chunk_end_sec:.1f}s (no speech)")
+                    seek += self.chunk_samples
+                    continue
 
             mel = log_mel_spectrogram(
                 chunk,
@@ -472,10 +745,17 @@ class AudioPredictor(Translator):
 
             with torch.no_grad():
                 token_ids, score = self._decode_with_fallback(batch)
+            if token_ids is None:
+                seek += self.chunk_samples
+                continue
+
+            text_ids = self._extract_text_token_ids(token_ids, token_beg)
+            score_value = float(score) if score is not None else 0.0
+            score_per_token = score_value / max(len(text_ids), 1)
 
             segments, seek_delta = self._parse_timestamp_tokens(token_ids, seek, token_beg)
             for seg in segments:
-                seg["score"] = score
+                seg["score"] = score_per_token
             all_segments.extend(segments)
 
             if do_word_timestamps:
@@ -508,13 +788,34 @@ class AudioPredictor(Translator):
 
         return all_segments, word_segments
 
-    def _build_conditioned_prefix(self, prev_tokens):
+    def _build_conditioned_prefix(self, prev_tokens, no_timestamps=False):
         """Build decoder prefix with previous text conditioning.
 
         Returns: [startofprev, prev_tokens[-max:], SOT, lang?, task?, ...]
         """
+        if no_timestamps:
+            if self._notimestamps_sot is None:
+                raise ValueError(
+                    "no_timestamps conditioned prefix requires no_timestamps_token_id in the model config."
+                )
+            sot = self._notimestamps_sot
+        else:
+            sot = self._sot_sequence
         truncated = prev_tokens[-self._max_prompt_length :]
-        return [self._startofprev_id] + truncated + self._sot_sequence
+        return [self._startofprev_id] + truncated + sot
+
+    def _extract_text_token_ids(self, token_ids, token_beg):
+        text_ids = []
+        for tid in token_ids:
+            if tid in self._tgt_eos_idx:
+                break
+            if tid >= token_beg:
+                continue
+            tok = self._tgt_vocab.lookup_index(tid)
+            if tok.startswith("<|") and tok.endswith("|>"):
+                continue
+            text_ids.append(tid)
+        return text_ids
 
     def _parse_timestamp_tokens(self, token_ids, seek_samples, token_beg):
         """Parse timestamp tokens from decoder output into segments.
@@ -637,7 +938,10 @@ class AudioPredictor(Translator):
         Returns:
             List of word dicts: [{"text": str, "start": float, "end": float}]
         """
-        token_beg = self.no_timestamps_token_id + 1
+        no_ts_token_id = self.no_timestamps_token_id
+        if no_ts_token_id is None:
+            return []
+        token_beg = no_ts_token_id + 1
         seek_offset = seek_samples / self.sample_rate
 
         text_token_ids = []
@@ -664,7 +968,8 @@ class AudioPredictor(Translator):
 
         prefix_len = len(self._static_prefix_ids)
         weights_list = []
-        for layer_idx, head_idx in self.word_timestamp_heads:
+        heads = self.word_timestamp_heads or []
+        for layer_idx, head_idx in heads:
             if layer_idx < len(cross_attns):
                 w = cross_attns[layer_idx][0, head_idx]
                 weights_list.append(w)

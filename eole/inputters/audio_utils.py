@@ -107,6 +107,44 @@ def log_mel_spectrogram(audio, mel_transform, n_frames):
     return log_spec
 
 
+def merge_vad_segments(speech_segments, max_chunk_seconds=30.0):
+    """Merge VAD speech segments by accumulating until span exceeds limit.
+
+    Accumulates segments into chunks until the span from chunk start to
+    segment end exceeds max_chunk_seconds. No gap threshold is applied,
+    and oversized single segments are not split.
+
+    Args:
+        speech_segments: list of {"start": float, "end": float}
+        max_chunk_seconds: maximum chunk span before splitting
+
+    Returns:
+        List of merged {"start": float, "end": float} chunks.
+    """
+    if not speech_segments:
+        return []
+
+    ordered = [
+        seg for seg in sorted(speech_segments, key=lambda s: s["start"]) if float(seg["end"]) > float(seg["start"])
+    ]
+    if not ordered:
+        return []
+
+    merged = []
+    curr_start = float(ordered[0]["start"])
+    curr_end = float(ordered[0]["end"])
+
+    for seg in ordered[1:]:
+        seg_end = float(seg["end"])
+        if seg_end - curr_start > max_chunk_seconds:
+            merged.append({"start": curr_start, "end": curr_end})
+            curr_start = float(seg["start"])
+        curr_end = max(curr_end, seg_end)
+
+    merged.append({"start": curr_start, "end": curr_end})
+    return merged
+
+
 def tensorify_audio(minibatch, device):
     """Transform a batch of audio waveform examples into tensors.
 
@@ -132,6 +170,7 @@ def tensorify_audio(minibatch, device):
     # cid/cid_line_number are optional metadata from corpus config
     tensor_batch["cid"] = [ex.get("cid") for ex in examples]
     tensor_batch["cid_line_number"] = [ex.get("cid_line_number") for ex in examples]
+    tensor_batch["speech_segments"] = [ex.get("speech_segments", None) for ex in examples]
     return tensor_batch
 
 

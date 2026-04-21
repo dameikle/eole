@@ -101,11 +101,48 @@ class DecodingConfig(Config):
     verbose: bool = Field(default=False, description="Print scores and predictions for each input.")
     with_score: bool = Field(default=False, description="Add a tab separated score to each output.")
     # Audio/Whisper settings (used by AudioPredictor only)
-    timestamps: Literal["none", "segment", "word"] = Field(
+    timestamps: Literal["none", "segment", "word", "both"] = Field(
         default="none",
         description="Audio models only. Timestamp output: "
         "'none' = plain text, 'segment' = JSON with segment times, "
-        "'word' = per-word times via cross-attention DTW.",
+        "'word' = per-word times via selected alignment backend, "
+        "'both' = JSON object with both segment and word timings.",
+    )
+    vad_mode: Literal["none", "chunk_skip", "segment"] = Field(
+        default="none",
+        description="Audio models only. VAD usage mode: "
+        "'none' = ignore VAD metadata, "
+        "'chunk_skip' = skip timestamp-seeking chunks with no speech overlap, "
+        "'segment' = decode VAD speech segments directly.",
+    )
+    word_timestamps_backend: Literal["auto", "whisper_attn", "wav2vec2"] = Field(
+        default="auto",
+        description="Audio models only. Backend for timestamps='word': "
+        "'auto' = choose backend based on mode, "
+        "'whisper_attn' = Whisper cross-attention DTW, "
+        "'wav2vec2' = forced alignment backend.",
+    )
+    word_alignment_model: str | None = Field(
+        default=None,
+        description="Audio models only. Optional wav2vec2 alignment model name (torchaudio bundle or Hugging Face model id).",
+    )
+    wav2vec_dtype: Literal["fp32", "fp16", "bf16"] = Field(
+        default="fp32",
+        description="Audio models only. Compute dtype for wav2vec2 word alignment model.",
+    )
+    word_alignment_min_duration: float = Field(
+        default=0.02,
+        ge=0.0,
+        description="Audio models only. Minimum word duration in seconds applied after wav2vec2 alignment.",
+    )
+    word_alignment_max_duration: float = Field(
+        default=1.5,
+        ge=0.01,
+        description="Audio models only. Maximum word duration in seconds applied after wav2vec2 alignment.",
+    )
+    word_alignment_cap_outliers: bool = Field(
+        default=True,
+        description="Audio models only. Clamp long wav2vec2 word-duration outliers.",
     )
     language: str | None = Field(
         default=None,
@@ -131,6 +168,19 @@ class DecodingConfig(Config):
         "First temperature uses beam search; subsequent use sampling. "
         "Set to [0.0] to disable fallback.",
     )
+    fallback_top_k: int = Field(
+        default=0,
+        description="Audio models only. Sampling top-k used during fallback steps with temperature > 0. "
+        "Set to 0 for unconstrained sampling.",
+        ge=0,
+    )
+    fallback_top_p: float = Field(
+        default=1.0,
+        description="Audio models only. Sampling top-p used during fallback steps with temperature > 0. "
+        "Set to 1.0 for unconstrained sampling.",
+        ge=0.0,
+        lte=1.0,
+    )
     compression_ratio_threshold: float = Field(
         default=2.4,
         description="Audio models only. If gzip compression ratio of decoded "
@@ -152,10 +202,21 @@ class DecodingConfig(Config):
     attn_debug: bool = Field(default=False, description="Print best attn for each word.")
     align_debug: bool = Field(default=False, description="Print best align for each word.")
 
+    @model_validator(mode="after")
+    def _validate_audio_timestamp_modes(self):
+        if self.timestamps in {"word", "both"} and self.vad_mode == "segment":
+            if self.word_timestamps_backend == "whisper_attn":
+                raise ValueError(
+                    "timestamps in {'word','both'} with vad_mode='segment' requires word_timestamps_backend='wav2vec2' "
+                    "or 'auto'."
+                )
+        if self.word_alignment_min_duration > self.word_alignment_max_duration:
+            raise ValueError("word_alignment_min_duration must be <= word_alignment_max_duration.")
+        return self
+
 
 # in legacy opts, decoding config is separated (probably to be used elsewhere)
 class InferenceConfig(RunningConfig, DecodingConfig, LoRaConfig, QuantizeConfig):
-
     model_config = get_config_dict()
     model_config["arbitrary_types_allowed"] = True  # to allow torch.dtype
 
@@ -166,9 +227,13 @@ class InferenceConfig(RunningConfig, DecodingConfig, LoRaConfig, QuantizeConfig)
         "Useful to test the performance of learnt alignments.",
     )
     report_time: bool = Field(default=False, description="Report some translation time metrics.")
-    fuse_kvq: bool = Field(default=False, description="Fuse K, V, Q Linear layers into a single KVQ in Self Attn.")
+    fuse_kvq: bool = Field(
+        default=False,
+        description="Fuse K, V, Q Linear layers into a single KVQ in Self Attn.",
+    )
     fuse_gate: bool = Field(
-        default=False, description="Fuse gate_up_proj and up_proj Linear layers into a single Linear."
+        default=False,
+        description="Fuse gate_up_proj and up_proj Linear layers into a single Linear.",
     )
     profile: bool = Field(default=False, description="Report pytorch profiling stats.")
     batch_size: int = Field(default=30, description="Batch size.")
