@@ -146,6 +146,19 @@ class DecodingConfig(Config):
         "First temperature uses beam search; subsequent use sampling. "
         "Set to [0.0] to disable fallback.",
     )
+    fallback_top_k: int = Field(
+        default=0,
+        description="Audio models only. Sampling top-k used during fallback steps with temperature > 0. "
+        "Set to 0 for unconstrained sampling.",
+        ge=0,
+    )
+    fallback_top_p: float = Field(
+        default=1.0,
+        description="Audio models only. Sampling top-p used during fallback steps with temperature > 0. "
+        "Set to 1.0 for unconstrained sampling.",
+        ge=0.0,
+        lte=1.0,
+    )
     compression_ratio_threshold: float = Field(
         default=2.4,
         description="Audio models only. If gzip compression ratio of decoded "

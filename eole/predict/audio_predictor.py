@@ -200,6 +200,8 @@ class AudioPredictor(Translator):
         self._no_speech_threshold = getattr(config, "no_speech_threshold", 0.6)
 
         self._fallback_temperatures = getattr(config, "fallback_temperatures", [0.0])
+        self._fallback_top_k = getattr(config, "fallback_top_k", 0)
+        self._fallback_top_p = getattr(config, "fallback_top_p", 1.0)
         self._compression_ratio_threshold = getattr(config, "compression_ratio_threshold", 2.4)
         self._logprob_threshold = getattr(config, "logprob_threshold", -1.0)
         self._seed = getattr(config, "seed", -1)
@@ -284,7 +286,12 @@ class AudioPredictor(Translator):
             else:
                 if self._seed >= 0:
                     torch.manual_seed(self._seed + i)
-                params = dict(beam_size=1, temperature=t, top_k=0, top_p=1.0)
+                params = dict(
+                    beam_size=1,
+                    temperature=t,
+                    top_k=self._fallback_top_k,
+                    top_p=self._fallback_top_p,
+                )
 
             with self._search_params(**params):
                 results = self.predict_batch(batch, attn_debug=False)
