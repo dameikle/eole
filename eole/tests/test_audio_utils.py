@@ -4,7 +4,19 @@ from tempfile import NamedTemporaryFile
 
 import torch
 
-from eole.inputters.audio_utils import MelSpectrogram, load_audio, log_mel_spectrogram
+from eole.inputters.audio_utils import (
+    MelSpectrogram,
+    load_audio,
+    log_mel_spectrogram,
+    merge_vad_segments,
+    tensorify_audio,
+)
+from eole.inputters.text_utils import transform_bucket
+
+
+class _IdentityTransform:
+    def batch_apply(self, examples, is_train=False, corpus_name=None):
+        return examples
 
 
 class TestAudioUtils(unittest.TestCase):
@@ -111,6 +123,68 @@ class TestAudioUtils(unittest.TestCase):
 
         self.assertEqual(mel.shape[0], 40)
         self.assertEqual(mel.dtype, torch.float32)
+
+    def test_merge_vad_segments_empty_segments(self):
+        self.assertEqual(merge_vad_segments([]), [])
+
+    def test_merge_vad_segments_within_chunk_size(self):
+        segments = [
+            {"start": 0.0, "end": 1.0},
+            {"start": 11.0, "end": 12.0},
+        ]
+        self.assertEqual(merge_vad_segments(segments, max_chunk_seconds=30.0), [{"start": 0.0, "end": 12.0}])
+
+    def test_merge_vad_segments_split_on_span_exceeding_chunk_size(self):
+        segments = [
+            {"start": 0.0, "end": 5.0},
+            {"start": 10.0, "end": 15.0},
+            {"start": 28.0, "end": 33.0},
+        ]
+        self.assertEqual(
+            merge_vad_segments(segments, max_chunk_seconds=30.0),
+            [
+                {"start": 0.0, "end": 15.0},
+                {"start": 28.0, "end": 33.0},
+            ],
+        )
+
+    def test_merge_vad_segments_filters_invalid_segments(self):
+        segments = [
+            {"start": 5.0, "end": 3.0},
+            {"start": 10.0, "end": 10.0},
+        ]
+        self.assertEqual(merge_vad_segments(segments), [])
+
+    def test_tensorify_audio_preserves_speech_segments(self):
+        speech_segments = [{"start": 0.1, "end": 0.8}]
+        batch = tensorify_audio(
+            [
+                (
+                    {
+                        "src": torch.zeros(16000),
+                        "src_type": "waveform",
+                        "audio_file": "sample.wav",
+                        "speech_segments": speech_segments,
+                    },
+                    0,
+                )
+            ],
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(batch["speech_segments"], [speech_segments])
+
+    def test_transform_bucket_accepts_waveform_examples(self):
+        example = {
+            "src": torch.zeros(16000),
+            "src_type": "waveform",
+            "audio_file": "sample.wav",
+            "speech_segments": [],
+        }
+
+        transformed = transform_bucket("infer", [(example, _IdentityTransform(), None)])
+
+        self.assertEqual(transformed, [example])
 
 
 if __name__ == "__main__":

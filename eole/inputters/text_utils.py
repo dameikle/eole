@@ -35,6 +35,13 @@ def clean_example(example):
         Cleaned example dict with standardized structure.
     """
 
+    if example.get("src_type") == "waveform":
+        if not isinstance(example.get("src"), torch.Tensor):
+            raise TypeError("Waveform example expects `src` to be a torch.Tensor.")
+        if "sco" not in example:
+            example["sco"] = 1
+        return example
+
     src = example["src"]
     if not isinstance(src, list):
         src = src.split(" ")
@@ -90,7 +97,9 @@ def transform_bucket(task, bucket, threshold=0):
             example = clean_example(example)
 
             # Filter by non-empty source and score threshold
-            if ("mel" in example.keys() or len(example["src"]["src"]) > 0) and example.get("sco", 1) >= threshold:
+            if example.get("src_type") == "waveform" and example.get("sco", 1) >= threshold:
+                transformed_examples.append(example)
+            elif ("mel" in example.keys() or len(example["src"]["src"]) > 0) and example.get("sco", 1) >= threshold:
                 transformed_examples.append(example)
 
     return transformed_examples if transformed_examples else None

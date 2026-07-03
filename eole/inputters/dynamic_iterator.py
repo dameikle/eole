@@ -353,7 +353,8 @@ class DynamicDatasetIter(torch.utils.data.IterableDataset):
         """
         if self.data_type == "audio":
             if self.task == CorpusTask.INFER:
-                return [ex for ex, _transform, _cid in tuple_bucket]
+                transformed_bucket = transform_bucket(self.task, tuple_bucket, self.score_threshold)
+                return [] if transformed_bucket is None else transformed_bucket
 
             transformed_bucket = transform_bucket(self.task, tuple_bucket, self.score_threshold)
             if transformed_bucket is None:

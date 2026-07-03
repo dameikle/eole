@@ -79,13 +79,76 @@ eole predict -config whisper_predict.yaml -src ./audio_files.txt -output ./segme
 
 ### Word timestamps
 
-Outputs JSON with per-word timing via cross-attention DTW alignment:
+Outputs JSON with per-word timing using the configured alignment backend:
 
 ```
 eole predict -config whisper_predict.yaml -src ./audio_files.txt -output ./words.json -timestamps word
 ```
 
-Note: word-level timestamps require a model with `alignment_heads` in its `generation_config.json` (e.g. `whisper-base.en`, `whisper-small`, `whisper-large-v3`).
+Note:
+- `word_timestamps_backend: whisper_attn` requires a model with `alignment_heads` in its `generation_config.json` (e.g. `whisper-base.en`, `whisper-small`, `whisper-large-v3`).
+- `word_timestamps_backend: wav2vec2` uses Hugging Face wav2vec2 CTC forced alignment and does not depend on Whisper `alignment_heads`.
+
+### Segment and Word Timestamps
+
+Outputs a JSON object containing both segment and word timings:
+
+```
+eole predict -config whisper_predict_vad_segment_both.yaml -src ./audio_files.txt -output ./both.json
+```
+
+This is useful for downstream subtitle and TTS pipelines that need both segment boundaries and word-level timing.
+
+## VAD modes
+
+EOLE supports optional VAD-aware decoding for audio inference through the standard transform pipeline.
+
+### `vad_mode: none` (default)
+
+- No VAD-aware seeking behavior.
+- Uses standard timestamp-seeking decode.
+
+### `vad_mode: chunk_skip`
+
+- Requires `transforms: [silero_vad]`.
+- Keeps standard 30s timestamp-seeking decode.
+- Skips chunks that have no overlap with detected speech segments.
+
+### `vad_mode: segment`
+
+- Requires `transforms: [silero_vad]`.
+- Decodes merged VAD speech regions directly.
+- Uses Hugging Face wav2vec2 alignment by default for `timestamps: word` and `timestamps: both`.
+
+Examples:
+
+```bash
+eole predict -config whisper_predict_vad.yaml
+eole predict -config whisper_predict_vad_chunk_skip.yaml
+eole predict -config whisper_predict_vad_segment.yaml
+eole predict -config whisper_predict_vad_segment_word.yaml
+eole predict -config whisper_predict_vad_segment_both.yaml
+```
+
+## Word timestamp backends
+
+Use `word_timestamps_backend` when `timestamps` is `word` or `both`:
+
+- `whisper_attn`: Whisper cross-attention DTW backend.
+- `wav2vec2`: Hugging Face wav2vec2 CTC forced alignment backend.
+- `auto`: selects backend automatically:
+  - `vad_mode: segment` -> `wav2vec2`
+  - other modes -> `whisper_attn`
+
+Legacy TorchAudio bundle names such as `WAV2VEC2_ASR_BASE_960H` and `VOXPOPULI_ASR_BASE_10K_FR` are accepted as aliases for equivalent Hugging Face model IDs.
+
+Optional dependencies:
+
+```bash
+pip install -e .[vad]          # Silero VAD transform
+pip install -e .[align]        # Hugging Face wav2vec2 word alignment
+pip install -e .[vad,align]    # VAD segment mode with word timestamps
+```
 
 ## Language and task
 
@@ -196,7 +259,16 @@ The script normalises text using `EnglishTextNormalizer` from the `whisper-norma
 | `batch_size` | int  | 1        | Batch size (use 1 for audio)                                    |
 | `gpu_ranks` | list | []       | GPU device IDs                                                  |
 | `seed` | int  | -1       | Random seed. Set to 0+ for deterministic fallback sampling      |
-| `timestamps` | str  | "none"   | Output mode: "none", "segment", "word"                          |
+| `timestamps` | str  | "none"   | Output mode: "none", "segment", "word", "both"                          |
+| `vad_mode` | str | "none" | VAD behavior: "none", "chunk_skip", "segment"                                |
+| `word_timestamps_backend` | str | "auto" | Word timestamp backend: "auto", "whisper_attn", "wav2vec2"                   |
+| `word_alignment_model` | str | null | Optional Hugging Face wav2vec2 model ID or legacy TorchAudio bundle alias       |
+| `word_alignment_min_duration` | float | 0.02 | Minimum per-word duration after wav2vec2 post-processing                     |
+| `word_alignment_max_duration` | float | 1.5 | Maximum per-word duration after wav2vec2 post-processing                     |
+| `word_alignment_cap_outliers` | bool | true | Clamp long wav2vec2 word-duration outliers                                   |
+| `wav2vec_dtype` | str | "fp32" | Compute dtype for wav2vec2 alignment: "fp32", "fp16", "bf16"              |
+| `fallback_top_k` | int | 0 | Sampling top-k used during audio fallback steps with temperature > 0             |
+| `fallback_top_p` | float | 1.0 | Sampling top-p used during audio fallback steps with temperature > 0           |
 | `language` | str  | null     | Source language code (e.g. "en", "fr", "zh")                    |
 | `task` | str  | null     | "transcribe" or "translate"                                     |
 | `initial_prompt` | str  | null     | Text prompt for decoder conditioning                            |

@@ -120,6 +120,8 @@ setup(
         "pydantic",
     ],
     extras_require={
+        "align": ["transformers>=4.48.0"],
+        "vad": ["silero-vad"],
         "wer": ["jiwer>=3.0", "whisper-normalizer>=0.1"],
         "trackio": ["trackio>=0.23.0"],
     },
