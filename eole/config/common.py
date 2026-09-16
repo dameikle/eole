@@ -190,7 +190,9 @@ class LoggingConfig(Config):
         description="Log GPU metrics. None = auto-detect (requires nvidia-ml-py or psutil for Apple Silicon).",
     )
     trackio_system_log_interval: float = Field(
-        default=10.0, description="Interval in seconds between automatic system (CPU/GPU) metric logs."
+        default=10.0,
+        gt=0,
+        description="Interval in seconds between automatic system (CPU/GPU) metric logs.",
     )
     trackio_log_config_artifact: bool = Field(
         default=True, description="Upload the run config as a file artifact against the trackio run."

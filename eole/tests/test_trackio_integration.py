@@ -27,6 +27,16 @@ class TestTrackioIntegration(unittest.TestCase):
             env = os.environ.copy()
             env["TRACKIO_DIR"] = str(Path(tmpdir) / "trackio")
             env["TRACKIO_IT_WORKDIR"] = tmpdir
+            env["TRACKIO_STORAGE_MODE"] = "sqlite"
+            for key in (
+                "SYSTEM",
+                "TRACKIO_BUCKET_ID",
+                "TRACKIO_DATASET_ID",
+                "TRACKIO_SERVER_URL",
+                "TRACKIO_SPACE_ID",
+                "TRACKIO_WRITE_TOKEN",
+            ):
+                env.pop(key, None)
             # Run the script against this working tree, not any installed eole.
             env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(repo_root), env.get("PYTHONPATH")]))
             result = subprocess.run(

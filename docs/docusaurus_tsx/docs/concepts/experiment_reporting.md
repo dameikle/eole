@@ -104,7 +104,7 @@ At runtime, the following failure behavior happens:
 
 ## Distributed behavior
 
-In distributed training, TensorBoard and Trackio are initialized on rank 0 (`gpu_rank <= 0`) only, to avoid duplicate logging.
+In distributed training, TensorBoard and Trackio are initialized on rank 0 (`gpu_rank <= 0`) only, to avoid duplicate logging. Rank 0 records config artifacts and, when automatic system monitoring is enabled, Trackio monitors the CPU and GPUs on the rank 0 host.
 
 ## Config snippet example
 

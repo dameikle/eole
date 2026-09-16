@@ -9,9 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import yaml
+from pydantic import PrivateAttr
 
 import eole
 
+from eole.bin.run import RunBin
+from eole.config.config import Config
 from eole.config.run import TrainConfig
 from eole.utils.report_manager import (
     CompositeReportMgr,
@@ -254,6 +257,13 @@ class TestBuildReportManagerTrackio(unittest.TestCase):
         # private attrs are excluded from the dump
         self.assertNotIn("_config_file", effective)
 
+    def test_system_log_interval_must_be_positive(self):
+        for interval in (0, -1):
+            with self.subTest(interval=interval), self.assertRaises(ValueError):
+                self._make_config(trackio_system_log_interval=interval)
+
+        self.assertEqual(self._make_config(trackio_system_log_interval=0.1).trackio_system_log_interval, 0.1)
+
     def test_cli_only_run_uploads_only_effective(self):
         trackio, state = self._new_trackio()
         config = self._make_config()
@@ -287,6 +297,29 @@ class TestBuildReportManagerTrackio(unittest.TestCase):
 
         self.assertIsNotNone(state["init"])
         self.assertEqual(state["artifacts"], [])
+
+    def test_distributed_rank_zero_uploads_artifacts(self):
+        trackio, state = self._new_trackio()
+        config = self._make_config(trackio_space_id="user/space")
+        config.training.world_size = 2
+
+        with patch.dict("sys.modules", {"trackio": trackio}):
+            mgr = build_report_manager(config, gpu_rank=0)
+
+        self.assertEqual([a["name"] for a in state["artifacts"]], ["config-effective.yaml"])
+        self.assertTrue(any(isinstance(m, TrackioReportMgr) for m in mgr.managers))
+
+    def test_distributed_nonzero_rank_does_not_initialize_trackio(self):
+        trackio, state = self._new_trackio()
+        config = self._make_config(trackio_space_id="user/space")
+        config.training.world_size = 2
+
+        with patch.dict("sys.modules", {"trackio": trackio}):
+            mgr = build_report_manager(config, gpu_rank=1)
+
+        self.assertIsNone(state["init"])
+        self.assertEqual(state["artifacts"], [])
+        self.assertFalse(any(isinstance(m, TrackioReportMgr) for m in mgr.managers))
 
     def test_artifact_failure_keeps_trackio_manager(self):
         trackio, state = self._new_trackio()
@@ -325,6 +358,33 @@ class TestBuildReportManagerTrackio(unittest.TestCase):
         self.assertEqual([a["name"] for a in state["artifacts"]], ["wmt17-mini-trackio-effective.yml"])
         self.assertTrue(yaml.safe_load(state["artifacts"][0]["content"])["trackio"])
         self.assertTrue(any(isinstance(m, TrackioReportMgr) for m in mgr.managers))
+
+
+class TestRunBinConfigProvenance(unittest.TestCase):
+    def test_build_config_only_sets_declared_private_attribute(self):
+        class PlainConfig(Config):
+            value: int = 1
+
+        class ProvenanceConfig(PlainConfig):
+            _config_file: str | None = PrivateAttr(default=None)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = os.path.join(tmpdir, "config.yaml")
+            with open(config_file, "w", encoding="utf-8") as config:
+                config.write("value: 2\n")
+            args = SimpleNamespace(config=config_file)
+
+            class PlainRunBin(RunBin):
+                config_class = PlainConfig
+
+            class ProvenanceRunBin(RunBin):
+                config_class = ProvenanceConfig
+
+            plain = PlainRunBin.build_config(args)
+            provenance = ProvenanceRunBin.build_config(args)
+
+        self.assertFalse(hasattr(plain, "_config_file"))
+        self.assertEqual(provenance._config_file, config_file)
 
 
 if __name__ == "__main__":

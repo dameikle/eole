@@ -38,9 +38,8 @@ class RunBin(BaseBin):
             config_dict.pop(_key, None)
 
         config = cls.config_class(**config_dict)
-        # Declared as a PrivateAttr on LoggingConfig: excluded from serialization, kept for
-        # downstream consumers (e.g. trackio config artifact upload).
-        config._config_file = args.config
+        if hasattr(config, "_config_file"):
+            config._config_file = args.config
         return config
 
     @classmethod
